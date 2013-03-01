@@ -1,0 +1,4 @@
+ebot
+====
+
+XMPP bot framework
