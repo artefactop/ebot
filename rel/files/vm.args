@@ -1,8 +1,8 @@
 ## Name of the node
--name bot@127.0.0.1
+-sname bot
 
 ## Cookie for distributed erlang
--setcookie bot
+-setcookie 5e6d2988-367e-45a1-aa95-91d0ad038d90
 
 ## Heartbeat management; auto-restarts VM if it dies or becomes unresponsive
 ## (Disabled by default..use with caution!)
