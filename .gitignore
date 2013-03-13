@@ -11,5 +11,5 @@ ebin
 variables-ct*
 ct_run.*
 variables-*
-rel/*node
+rel/bot
 .project

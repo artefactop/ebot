@@ -1,0 +1,21 @@
+{application, bot,
+ [
+  {description, "Regular bot"},
+  {vsn, git},
+  {registered, []},
+  {applications, [
+                  kernel,
+                  stdlib,
+                  exmpp,
+                  lager,
+                  syslog,
+                  uuid
+                 ]},
+    {mod, { bot_app, []}},
+    {env, [
+        {port, 5222},
+        {resource, random},
+        {services, []},
+        {timeout, 10000}
+        ]}
+]}.
