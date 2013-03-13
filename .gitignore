@@ -1,5 +1,15 @@
+*~
 .eunit
 deps
 *.o
 *.beam
 *.plt
+*.log
+*.html
+*.dump
+ebin
+variables-ct*
+ct_run.*
+variables-*
+rel/*node
+.project
