@@ -143,6 +143,7 @@ make_connection(Session, Jid, Password, Server, Port, Tries) ->
             {R, Session}
     catch
         Exception ->
+            syslog(emerg, io_lib:format("Not can connect to server, Exception: ~p~n",[Exception])),
             lager:warning("Exception: ~p~n",[Exception]),
             timer:sleep((20-Tries) * 200),
             make_connection(Session, Jid, Password, Server, Port, Tries-1)
