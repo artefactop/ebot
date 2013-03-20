@@ -12,7 +12,8 @@
     server :: string(),
     port :: non_neg_integer(),
     services :: list(),
-    timeout = 10000 :: timeout()
+    timeout = 10000 :: timeout(),
+    timer :: reference()
 }).
 
 %% ------------------------------------------------------------------
@@ -56,13 +57,13 @@ init([]) ->
     {ok, Services} = application:get_env(services),
     {ok, Timeout} = application:get_env(timeout),
 
-    ping_timer:init(),
+    timem:init(),
     init_syslog(local7, "bot@"++Server),
 
     Jid = exmpp_jid:make(User, Domain, Resource),
 
     {_, Session} = make_connection(Jid, Password, Server, Port),
-    erlang:send_after(Timeout, self(), trigger),
+    Timer = erlang:send_after(Timeout, self(), trigger),
 
     {ok, #state{
         session = Session,
@@ -71,7 +72,8 @@ init([]) ->
         server = Server,
         port = Port,
         services = Services,
-        timeout = Timeout}}.
+        timeout = Timeout,
+        timer = Timer}}.
 
 handle_call(_Request, _From, State) ->
     {reply, ok, State}.
@@ -98,7 +100,30 @@ handle_info(#received_packet{packet_type=message}=Rcv_Packet, #state{session=Ses
     spawn(message_handler, process_message, [Rcv_Packet, Session]),
     {noreply, State};
 
-handle_info(_Info, State) ->
+handle_info({_, tcp_closed}, #state{jid=Jid, server=Server, pass=Pass, port=Port, timeout=Timeout, timer=Timer}=State) ->
+    lager:info("Connection Closed. Trying to Reconnect...~n", []),
+    erlang:cancel_timer(Timer),
+    {_, Session} = make_connection(Jid, Pass, Server, Port),
+    New_Timer = erlang:send_after(Timeout, self(), trigger),
+    lager:info("Reconnected.~n", []),
+    {noreply, State#state{session=Session, timer=New_Timer}};
+
+handle_info({_,{bad_return_value, _}}, #state{jid=Jid, server=Server, pass=Pass, port=Port, timeout=Timeout, timer=Timer}=State) ->
+    lager:info("Connection Closed. Trying to Reconnect...~n", []),
+    erlang:cancel_timer(Timer),
+    {_, Session} = make_connection(Jid, Pass, Server, Port),
+    New_Timer = erlang:send_after(Timeout, self(), trigger),
+    lager:info("Reconnected.~n", []),
+    {noreply, State#state{session=Session, timer=New_Timer}};
+
+handle_info(stop, #state{session=Session, timer=Timer}=State) ->
+    lager:info("Component Stopped.~n",[]),
+    exmpp_component:stop(Session),
+    erlang:cancel_timer(Timer),
+    {stop, normal, State};
+
+handle_info(Info, State) ->
+    lager:info("Unknown Info Request: ~p~n", [Info]),
     {noreply, State}.
 
 terminate(_Reason, _State) ->
@@ -143,28 +168,33 @@ make_connection(Session, Jid, Password, Server, Port, Tries) ->
             {R, Session}
     catch
         Exception ->
-            syslog(emerg, io_lib:format("Not can connect to server, Exception: ~p~n",[Exception])),
+            syslog(emerg, io_lib:format("Can not connect to server, Tries Left: ~p, Exception: ~p~n",[Tries, Exception])),
             lager:warning("Exception: ~p~n",[Exception]),
             timer:sleep((20-Tries) * 200),
             make_connection(Session, Jid, Password, Server, Port, Tries-1)
     end.
 
 send_ping(#state{session=Session, jid=Jid, timeout=Timeout, services=Services}) ->
-    lager:info("Sending ping"),
-    Expired = ping_timer:remove_expired(Timeout),
-    lager:info("Expired ids: ~p~n",[Expired]),
+    lager:debug("Sending ping"),
+    Expired = timem:remove_expired(Timeout),
+    lager:debug("Expired ids: ~p~n",[Expired]),
     lists:foreach(fun({_, {Service, _}}) -> 
+        lager:info("Service ~s NOT responding during ~p milliseconds", [erlang:binary_to_list(Service), Timeout]),
         syslog(emerg, io_lib:format("Service ~s NOT responding during ~p milliseconds", [erlang:binary_to_list(Service), Timeout]))
      end, Expired),
-    lists:foreach(fun(X) -> lager:info("Send ping to : ~p~n",[X]), send_ping(Session, Jid, X) end, Services).
+    Sleep = Timeout div length(Services),
+    lists:foreach(fun(X) ->
+        send_ping(Session, Jid, X),
+        timer:sleep(Sleep)
+        end, Services).
 
 send_ping(Session, From, To) ->
     Ping = exmpp_xml:element(?NS_PING, 'ping'), 
     Id = gen_id(),
     Stanza = exmpp_iq:get(?NS_COMPONENT_ACCEPT, Ping, Id),
     Packet = exmpp_stanza:set_jids(Stanza, From, To),
-    R = ping_timer:insert(Id, {To, os:timestamp()}),
-    lager:info("ping IQ:~n~p~n~p~n~n", [Packet, R]),
+    R = timem:insert(Id, {To, os:timestamp()}),
+    lager:debug("ping IQ:~n~p~n~p~n~n", [Packet, R]),
     exmpp_session:send_packet(Session, Packet).
 
 %% Utils

@@ -1,4 +1,4 @@
--module(ping_timer).
+-module(timem).
 
 -export([init/0, insert/2, remove/1, tm/1, expired/1, remove_expired/1]).
 
