@@ -10,18 +10,24 @@ process_message(#received_packet{from=From, raw_packet=Packet}, Session) ->
 
 %% Send the same packet back for each message received
 echo_packet(Session, From, Packet) ->
+    lager:info("Received message ~n~p~n", [Packet]),
     case exmpp_xml:has_element(Packet, 'body') of
         true ->
             To = exmpp_stanza:get_sender(Packet),
+            From_Binary = exmpp_stanza:get_recipient(Packet),
+            FromJidTmp = exmpp_jid:parse(From_Binary),
             ToJidTmp = exmpp_jid:parse(To),
+    lager:info("ToJidTmp ~n~p~n", [ToJidTmp]),
             ToJid = exmpp_jid:make(exmpp_jid:node(ToJidTmp), exmpp_jid:domain(ToJidTmp)),
-            handle_message_receipts(Session, From, ToJid, Packet),
 
-            TmpPacket = exmpp_stanza:set_sender(Packet, From),
-            TmpPacket2 = exmpp_stanza:set_recipient(TmpPacket, ToJid),
-            NewPacket = exmpp_xml:remove_attribute(TmpPacket2, <<"id">>),
-            io:format("Echo message ~n~p~n", [NewPacket]),
-            exmpp_session:send_packet(Session, NewPacket);
+    lager:info("ToJid ~n~p~n", [ToJid]),
+            FromJid = exmpp_jid:make(exmpp_jid:node(FromJidTmp), exmpp_jid:domain(FromJidTmp)),
+            handle_message_receipts(Session, FromJid, ToJid, Packet),
+    lager:info("From ~n~p~n", [FromJid]),
+            TmpEcho = exmpp_message:chat(exmpp_message:get_body(Packet)), 
+            Echo = exmpp_stanza:set_jids(TmpEcho, FromJid, ToJid),
+            lager:info("Echo message ~n~p~n", [Echo]),
+            exmpp_session:send_packet(Session, Echo);
         _ -> ok
     end.
 
@@ -40,7 +46,7 @@ handle_message_receipts(MySession, From, To, Packet) ->
             TmpPacket = exmpp_stanza:set_sender(MessageTmp1, From),
             Message = exmpp_stanza:set_recipient(TmpPacket, To),
             
-            io:format("Response receipt ~n~p~n", [Message]),
+            lager:info("Response receipt ~n~p~n", [Message]),
             exmpp_session:send_packet(MySession, Message);
         _ ->
             ok
