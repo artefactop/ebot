@@ -6,7 +6,8 @@
 -include_lib("exmpp/include/exmpp_client.hrl").
 
 -record(state, {
-    session:: pid(),
+    ref :: reference(),
+    session :: pid(),
     jid :: exmpp_jid:jid(),
     pass :: string(),
     server :: string(),
@@ -63,9 +64,11 @@ init([]) ->
     Jid = exmpp_jid:make(User, Domain, Resource),
 
     {_, Session} = make_connection(Jid, Password, Server, Port),
+    Ref = erlang:monitor(process, Session),
     Timer = erlang:send_after(Timeout, self(), trigger),
 
     {ok, #state{
+        ref = Ref,
         session = Session,
         jid = Jid,
         pass = Password,
@@ -100,26 +103,14 @@ handle_info(#received_packet{packet_type=message}=Rcv_Packet, #state{session=Ses
     spawn(message_handler, process_message, [Rcv_Packet, Session]),
     {noreply, State};
 
-handle_info({_, tcp_closed}, #state{jid=Jid, server=Server, pass=Pass, port=Port, timeout=Timeout, timer=Timer}=State) ->
-    lager:info("Connection Closed. Trying to Reconnect...~n", []),
-    erlang:cancel_timer(Timer),
-    {_, Session} = make_connection(Jid, Pass, Server, Port),
-    New_Timer = erlang:send_after(Timeout, self(), trigger),
-    lager:info("Reconnected.~n", []),
-    {noreply, State#state{session=Session, timer=New_Timer}};
+handle_info({'DOWN', Ref, process, Pid2, Reason}, State) ->
+    {noreply, try_reconnect(State)};
 
-handle_info({_,{bad_return_value, _}}, #state{jid=Jid, server=Server, pass=Pass, port=Port, timeout=Timeout, timer=Timer}=State) ->
-    lager:info("Connection Closed. Trying to Reconnect...~n", []),
-    erlang:cancel_timer(Timer),
-    {_, Session} = make_connection(Jid, Pass, Server, Port),
-    New_Timer = erlang:send_after(Timeout, self(), trigger),
-    lager:info("Reconnected.~n", []),
-    {noreply, State#state{session=Session, timer=New_Timer}};
-
-handle_info(stop, #state{session=Session, timer=Timer}=State) ->
+handle_info(stop, #state{ref=Ref, session=Session, timer=Timer}=State) ->
     lager:info("Component Stopped.~n",[]),
-    exmpp_component:stop(Session),
+    exmpp_session:stop(Session),
     erlang:cancel_timer(Timer),
+    erlang:demonitor(Ref),
     {stop, normal, State};
 
 handle_info(Info, State) ->
@@ -135,6 +126,19 @@ code_change(_OldVsn, State, _Extra) ->
 %% ------------------------------------------------------------------
 %% Internal Function Definitions
 %% ------------------------------------------------------------------
+
+-spec try_reconnect(State::record()) -> record().
+
+try_reconnect(#state{ref=Ref, jid=Jid, server=Server, pass=Pass, port=Port, timeout=Timeout, timer=Timer}=State) ->
+    lager:info("Connection Closed. Trying to Reconnect...~n", []),
+    erlang:demonitor(Ref),
+    erlang:cancel_timer(Timer),
+    {_, Session} = make_connection(Jid, Pass, Server, Port),
+    NewRef = erlang:monitor(process, Session),
+    lager:info("Session ~p", [Session]),
+    New_Timer = erlang:send_after(Timeout, self(), trigger),
+    lager:info("Reconnected.~n", []),
+    State#state{ref=NewRef, session=Session, timer=New_Timer}.
 
 -spec make_connection(Jid::exmpp_jid:jid(), Password::string(), Server::string(), Port::integer()) -> {R::string(), Session::pid()}.
 
