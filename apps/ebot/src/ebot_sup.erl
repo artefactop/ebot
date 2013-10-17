@@ -1,5 +1,4 @@
-
--module(bot_sup).
+-module(ebot_sup).
 
 -behaviour(supervisor).
 
@@ -25,6 +24,6 @@ start_link() ->
 
 init([]) ->
     {ok, { {one_for_one, 5, 10}, [
-        ?CHILD(bot, worker)
+        ?CHILD(ebot, worker)
     ]} }.
 

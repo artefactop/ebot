@@ -1,6 +1,6 @@
 @setlocal
 
-@set node_name=bot
+@set node_name=ebot
 
 @rem Get the absolute path to the parent directory,
 @rem which is assumed to be the node root.

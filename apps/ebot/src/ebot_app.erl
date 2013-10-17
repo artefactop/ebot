@@ -1,4 +1,4 @@
--module(bot_app).
+-module(ebot_app).
 
 -behaviour(application).
 
@@ -12,7 +12,7 @@
         {ok, Pid::pid()} | {error, Reason::any()}.
 
 start(_StartType, _StartArgs) ->
-    bot_sup:start_link().
+    ebot_sup:start_link().
 
 -spec stop( State::any() ) -> ok.
 

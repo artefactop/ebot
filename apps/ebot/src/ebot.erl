@@ -1,4 +1,4 @@
--module(bot).
+-module(ebot).
 -behaviour(gen_server).
 -define(SERVER, ?MODULE).
 
@@ -48,7 +48,7 @@ start_link() ->
     ignore | {stop, Reason :: string()}.
 
 init([]) ->    
-    lager:info("Loading Application bot", []),
+    lager:info("Loading Application ebot", []),
     {ok, User} = application:get_env(user),
     {ok, Domain} = application:get_env(domain),
     {ok, Resource} = application:get_env(resource),
@@ -59,7 +59,7 @@ init([]) ->
     {ok, Timeout} = application:get_env(timeout),
 
     timem:init(),
-    init_syslog(local7, "bot@"++Server),
+    init_syslog(local7, "ebot@"++Server),
 
     Jid = exmpp_jid:make(User, Domain, Resource),
 
@@ -103,7 +103,7 @@ handle_info(#received_packet{packet_type=message}=Rcv_Packet, #state{session=Ses
     spawn(message_handler, process_message, [Rcv_Packet, Session]),
     {noreply, State};
 
-handle_info({'DOWN', Ref, process, Pid2, Reason}, State) ->
+handle_info({'DOWN', _Ref, process, _Pid2, _Reason}, State) ->
     {noreply, try_reconnect(State)};
 
 handle_info(stop, #state{ref=Ref, session=Session, timer=Timer}=State) ->

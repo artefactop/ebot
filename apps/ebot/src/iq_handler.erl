@@ -16,9 +16,9 @@ handle_ping(_Session, "result", Packet) ->
     Id = exmpp_xml:get_attribute(Packet, <<"id">>, <<"unknown">>),
     case timem:remove(Id) of 
         {_, {Service, Tm}} ->
-            bot:syslog(notice, io_lib:format("Service ~p responding in ~p milliseconds", [erlang:binary_to_list(Service), diff_now_ms(Tm)]));
+            ebot:syslog(notice, io_lib:format("Service ~p responding in ~p milliseconds", [erlang:binary_to_list(Service), diff_now_ms(Tm)]));
         _ ->
-            bot:syslog(warning, io_lib:format("Unknown :~p", [Packet]))
+            ebot:syslog(warning, io_lib:format("Unknown :~p", [Packet]))
     end;
 handle_ping(_Session, "error", Packet) ->
     lager:debug("Received error ping IQ:~n~p~n", [Packet]),
@@ -26,9 +26,9 @@ handle_ping(_Session, "error", Packet) ->
     Condition = exmpp_stanza:get_condition(Packet),
     case timem:remove(Id) of 
         {_, {Service, Tm}} ->
-            bot:syslog(emerg, io_lib:format("Service ~p responding error ~p in ~p milliseconds", [erlang:binary_to_list(Service), erlang:atom_to_list(Condition), diff_now_ms(Tm)]));
+            ebot:syslog(emerg, io_lib:format("Service ~p responding error ~p in ~p milliseconds", [erlang:binary_to_list(Service), erlang:atom_to_list(Condition), diff_now_ms(Tm)]));
         _ ->
-            bot:syslog(warning, io_lib:format("Unknown :~p", [Packet]))
+            ebot:syslog(warning, io_lib:format("Unknown :~p", [Packet]))
     end.
 
 diff_now_ms(T) ->

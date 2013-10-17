@@ -1,5 +1,5 @@
 ## Name of the node
--sname bot
+-sname ebot
 
 ## Cookie for distributed erlang
 -setcookie 5e6d2988-367e-45a1-aa95-91d0ad038d90

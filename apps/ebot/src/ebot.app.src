@@ -1,4 +1,4 @@
-{application, bot,
+{application, ebot,
  [
   {description, "Regular bot"},
   {vsn, git},
@@ -11,7 +11,7 @@
                   syslog,
                   uuid
                  ]},
-    {mod, { bot_app, []}},
+    {mod, { ebot_app, []}},
     {env, [
         {port, 5222},
         {resource, random},

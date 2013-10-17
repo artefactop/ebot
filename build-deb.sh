@@ -5,8 +5,8 @@
 # You need to have installed rubygems, fpm[0] gem (gem install fpm) and build-essential
 # [0] https://github.com/jordansissel/fpm/wiki
 
-USER=bot
-GROUP=bot
+USER=ebot
+GROUP=ebot
 
 INSTDIR=$(pwd)/installdir
 FPM=$(gem which fpm | sed 's/\/lib\/fpm.rb/\/bin\/fpm/g')
@@ -38,10 +38,10 @@ if [[ $? -ne 0 ]]; then
 fi
 
 rm -rf $INSTDIR
-mkdir -p $INSTDIR/bot
-cp -a rel/bot/* $INSTDIR/bot
+mkdir -p $INSTDIR/ebot
+cp -a rel/ebot/* $INSTDIR/ebot
 
 #build the package
 pushd $INSTDIR
-$FPM -s dir -t deb -n bot -v $TAG -C $INSTDIR --description "Regular xmpp bot" -p bot-VERSION_ARCH.deb --config-files bot/etc/app.config --prefix /opt --deb-user $USER --deb-group $GROUP --maintainer '"Pepe" <jlnavarro111@gmail.com>' bot
+$FPM -s dir -t deb -n ebot -v $TAG -C $INSTDIR --description "Regular xmpp bot" -p ebot-VERSION_ARCH.deb --config-files ebot/etc/app.config --prefix /opt --deb-user $USER --deb-group $GROUP --maintainer '"Pepe" <jlnavarro111@gmail.com>' ebot
 
