@@ -65,7 +65,8 @@ remove(K) ->
                     ok
             end,
             {K, V};
-        _ ->
+        R ->
+            lager:error("Result for ets:lookup(timem_kv, ~p) -> ~p", [K,R]),
             undefined
     end.
 
