@@ -79,7 +79,7 @@ expired(D) ->
 -spec remove_expired(D::integer()) -> list({K::binary(), V::term()}).
 
 remove_expired(D) ->
-    [ remove(K) || K <- expired(D) ].
+    [ V || V <- [ remove(K) || K <- expired(D) ], V =/= undefined].
 
 -spec tm( T::erlang:timestamp() ) -> integer().
 

@@ -182,14 +182,13 @@ send_ping(#state{session=Session, jid=Jid, timeout=Timeout, services=Services}) 
     lager:debug("Sending ping"),
     Expired = timem:remove_expired(Timeout),
     lager:debug("Expired ids: ~p~n",[Expired]),
-    if Expired =/= [undefined] ->
-        lists:foreach(fun({_, {Service, _}}) -> 
-            lager:info("Service ~s NOT responding during ~p milliseconds", [erlang:binary_to_list(Service), Timeout]),
-            syslog(emerg, io_lib:format("Service ~s NOT responding during ~p milliseconds", [erlang:binary_to_list(Service), Timeout]))
-        end, Expired);
-        true -> lager:error("Expired ids was undefined")
-    end,
+    lists:foreach(fun({_, {Service, _}}) -> 
+        lager:info("Service ~s NOT responding during ~p milliseconds", [erlang:binary_to_list(Service), Timeout]),
+        syslog(emerg, io_lib:format("Service ~s NOT responding during ~p milliseconds", [erlang:binary_to_list(Service), Timeout]))
+    end, Expired),
     Sleep = Timeout div length(Services),
+    lager:debug("Session: ~p~n",[Session]),
+    lager:debug("Services list: ~p~n",[Services]),
     lists:foreach(fun(X) ->
         send_ping(Session, Jid, X),
         timer:sleep(Sleep)
