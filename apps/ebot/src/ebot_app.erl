@@ -12,7 +12,7 @@
         {ok, Pid::pid()} | {error, Reason::any()}.
 
 start(_StartType, _StartArgs) ->
-    Call = {handle_call, start_link, []},
+    Call = {jingle_call_handle, start_link, []},
     Nodes = [node()],
     forseti:start_link(Call, Nodes),
     ebot_sup:start_link().

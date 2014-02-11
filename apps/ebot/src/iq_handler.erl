@@ -13,7 +13,8 @@ process_iq(#received_packet{type_attr = Type, queryns = ?NS_PING, raw_packet = P
     handle_ping(Session, Type, Packet);
 process_iq(#received_packet{raw_packet = Packet, queryns = NS}, _Session) ->
     lager:debug("Namespace ~p", [NS]),
-    ebot:syslog(info, io_lib:format("RECEIVED: ~p", [Packet])),
+    lager:info("RECEIVED:~n~p~n", [Packet]),
+    ebot:syslog(info, io_lib:format("RECEIVED: ~p", [exmpp_xml:document_to_binary(Packet)])),
     ok.
 
 handle_ping(Session, "get", Packet) ->
@@ -53,8 +54,6 @@ handle_jingle(Session, Packet) ->
     {_Node,PID} = forseti:get_key(Sid),
        PID ! {Session, Packet},
     ok.
-
-
 
 diff_now_ms(T) ->
     (timem:tm(os:timestamp()) - timem:tm(T)) / 1000.

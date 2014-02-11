@@ -13,3 +13,5 @@ ct_run.*
 variables-*
 rel/ebot
 .project
+.idea
+*.iml
