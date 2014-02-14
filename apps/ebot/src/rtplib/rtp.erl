@@ -31,14 +31,14 @@
 -module(rtp).
 -author('lemenkov@gmail.com').
 
-% FIXME - don't forget to remove from final version!
--compile(export_all).
-
 -include("../../include/rtplib/rtcp.hrl").
 -include("../../include/rtplib/rtp.hrl").
 
 % FIXME move to the header?
 -define(MBZ, 0).
+
+-export([encode/1]).
+-export([decode/1]).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%%

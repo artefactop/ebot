@@ -19,12 +19,8 @@
 
 -define(LISTEN_IP, {0, 0, 0, 0}).
 -define(SOCKOPTS, [binary, {active, once}]).
-
-
--define(TCP, 6).
--define(UDP, 17).
--define(IPVER4, 4).
--define(IPVER6, 6).
+-define(FRECUENCY, 1 / 8000).     %%TODO calculate Frecuency codec dependant
+-define(TMIN, 5000).     %% 5 seconds
 
 %% GEN SERVER
 -export([
@@ -43,28 +39,34 @@
 
 -record(qos, {
     mos :: float(),
-    low_throughput,
-    dropped_pakets,
-    errors,
-    latency,
-    jitter,
-    out_of_order_delivery
+    round_trip_delay = 0.0 :: float(),
+    jitter = 0.0 :: float(),
+    packet_loss = 0.0 :: float()
 }).
 
 -type qos() :: #qos{}.
 
 -record(state, {
     sid :: binary(),
+    ssrc :: non_neg_integer(),
     origin_jid :: exmpp_jid:jid(),
     destination_jid :: exmpp_jid:jid(),
     rtp :: inet:posix(),
     rtcp :: inet:posix(),
     destination_addr :: {inet:ip_address(), inet:port_number()},
     last_timestamp :: erlang:timestamp(),
-    last_sequence_number :: non_neg_integer(),
-    loss_packets :: non_neg_integer(),
-    npackets :: non_neg_integer(),
-    qos :: qos()
+    last_rtp_packet_timestamp = 0 :: non_neg_integer(),
+    last_sequence_number = 0 :: non_neg_integer(),
+    lost_packets = 0 :: non_neg_integer(),
+    fraction_lost_packets = 0 :: non_neg_integer(),
+    dropped_packets = 0 :: non_neg_integer(),
+    npackets = 0 :: non_neg_integer(),
+    noctets = 0 :: non_neg_integer(),
+    key :: binary(),
+    mask :: binary(),
+    qos :: qos(),
+    sr_ntp = 0 :: non_neg_integer(),
+    timeout = 2500 :: non_neg_integer()
 }).
 
 start_link(_Key) ->
@@ -92,65 +94,150 @@ handle_info({Session, Packet}, State) ->
         end,
     Result;
 
+handle_info(send_sr, State) ->
+    % Do the action
+    SR = #sr{
+        ssrc = State#state.ssrc,
+        ntp = rtp_utils:ntp_timestamp(),
+        timestamp = 0, %%TODO fix
+        packets = State#state.npackets,
+        octets = State#state.noctets,
+        rblocks = []}, %%TODO fix
+    lager:info("SID:~p, SR: ~p",
+        [State#state.sid, SR]),
+    SRData = rtcp:encode(SR),
+    {IP, Port} = State#state.destination_addr,
+    send(State#state.rtcp, IP, Port + 1, SRData),
+    C = 1, %% priori calculated interval according 5% target for the control bandwidth
+    Timeout = trunc(State#state.timeout + random:uniform() * max(?TMIN, C * 2)),
+    % Start new timer
+    erlang:send_after(Timeout, self(), send_sr),
+    {noreply, State#state{timeout = Timeout}};
+
 handle_info({udp, Sock, SrcIP, SrcPort, Data},
     #state{sid = Sid, rtp = Sock, npackets = NPackets,
-        last_sequence_number = LSN,
-        loss_packets = LossP} = State) ->
+        last_sequence_number = LastSequenceNumber, qos = QOS} = State) ->
     lager:debug("RTP data received from: ~p:~p ", [SrcIP, SrcPort]),
     inet:setopts(Sock, [{active, once}]),
     lager:debug("destination addr: ~p ", [State#state.destination_addr]),
-    case State#state.destination_addr of
-        {DstIP, DstPort} ->
-            send(State#state.rtp, DstIP, DstPort, Data);
-        _ ->
-            ok
-    end,
 
     NewState =
         case rtp:decode(Data) of
             {ok, RTP} ->
-                lager:debug("SID: ~p, PayloadType: ~p, SequenceNumber: ~p, Timestamp: ~p, SSRC: ~p",
-                    [Sid, RTP#rtp.payload_type, RTP#rtp.sequence_number, RTP#rtp.timestamp, RTP#rtp.ssrc]),
-                if
-                    NPackets == 0 ->
-                        SR = rtcp:encode_sr(RTP#rtp.ssrc, 0, 0, NPackets + 1, NPackets + 1, []), %%TODO fix
-                        {IP, Port} = State#state.destination_addr,
-                        send(State#state.rtcp, IP, Port + 1, SR);
-                    true -> ok
-                end,
+                lager:debug("SID: ~p, SSRC: ~p, CSRCS:~p, PayloadType: ~p, SequenceNumber: ~p, Timestamp: ~p",
+                    [Sid, RTP#rtp.ssrc, RTP#rtp.csrcs, RTP#rtp.payload_type, RTP#rtp.sequence_number, RTP#rtp.timestamp]),
 
-                lager:debug("LSN: ~p", [LSN]),
-                lager:debug("Sequence number: ~p", [RTP#rtp.sequence_number]),
-                lager:debug("Loss: ~p", [LossP]),
-                lager:debug("LOST: ~p", [RTP#rtp.sequence_number - (case NPackets of 0 -> RTP#rtp.sequence_number; _ ->
-                    LSN + 1 end) + LossP]),
+                Octets = State#state.noctets + byte_size(RTP#rtp.payload),
+                LostPackets = RTP#rtp.sequence_number - (case NPackets of 0 ->
+                    RTP#rtp.sequence_number; _ ->
+                    LastSequenceNumber + 1 end) + State#state.lost_packets,
+                FractionLostPackets = RTP#rtp.sequence_number - (case NPackets of 0 ->
+                    RTP#rtp.sequence_number; _ ->
+                    LastSequenceNumber + 1 end) + State#state.fraction_lost_packets,
+                Loss = loss_packets(LostPackets, NPackets + 1),
 
-                State#state{
-                    last_timestamp = now(),
-                    npackets = NPackets + 1,
-                    last_sequence_number = RTP#rtp.sequence_number,
-                    loss_packets = RTP#rtp.sequence_number - (case NPackets of 0 -> RTP#rtp.sequence_number; _ ->
-                        LSN + 1 end) + LossP
-                };
+                case RTP#rtp.sequence_number < LastSequenceNumber of
+                    true ->
+                        State#state{
+                            last_timestamp = os:timestamp(),
+                            npackets = NPackets + 1,
+                            dropped_packets = State#state.dropped_packets + 1,
+                            lost_packets = LostPackets,
+                            fraction_lost_packets = FractionLostPackets,
+                            noctets = Octets,
+                            qos = QOS#qos{packet_loss = Loss}
+                        };
+                    _ ->
+                        Redirect = RTP#rtp{ssrc = State#state.ssrc},
+                        RedirectData = rtp:encode(Redirect),
+                        case State#state.destination_addr of
+                            {DstIP, DstPort} ->
+                                send(State#state.rtp, DstIP, DstPort, RedirectData);
+                            _ ->
+                                ok
+                        end,
+
+                        Jitter =
+                            case NPackets == 0 of
+                                true -> 0;
+                                _ ->
+                                    {_, RecivedSecondsOld, _} = State#state.last_timestamp,
+                                    {_, RecivedSecondsNew, _} = os:timestamp(),
+
+                                    jitter(QOS#qos.jitter,
+                                        RecivedSecondsOld,
+                                        RecivedSecondsNew,
+                                        State#state.last_rtp_packet_timestamp,
+                                        RTP#rtp.timestamp,
+                                        ?FRECUENCY
+                                    )
+                            end,
+
+                        State#state{
+                            last_timestamp = os:timestamp(),
+                            last_rtp_packet_timestamp = RTP#rtp.timestamp,
+                            npackets = NPackets + 1,
+                            last_sequence_number = RTP#rtp.sequence_number,
+                            lost_packets = LostPackets,
+                            fraction_lost_packets = FractionLostPackets,
+                            noctets = Octets,
+                            qos = QOS#qos{jitter = Jitter, packet_loss = Loss}
+                        }
+                end;
             Error ->
                 lager:debug("RTP decode error: ~p", [Error]),
-                State#state{last_timestamp = now(), npackets = NPackets + 1}
+                State#state{last_timestamp = os:timestamp(), npackets = NPackets + 1}
         end,
     {noreply, NewState};
 
 handle_info({udp, Sock, SrcIP, SrcPort, Data},
-    #state{rtcp = Sock} = State) ->
+    #state{rtcp = Sock, qos = QOS} = State) ->
+    NTP = rtp_utils:ntp_timestamp(),
     lager:debug("RTCP data received from: ~p:~p", [SrcIP, SrcPort]),
     inet:setopts(Sock, [{active, once}]),
-    case rtcp:decode(Data) of
-        {ok, RTCP} ->
-            lager:debug("SID:~p, RTCP: ~p",
-                [State#state.sid, RTCP]);
-        Error ->
-            lager:debug("RTCP decode error: ~p", [Error])
-    end,
-    %% TODO write stats
-    {noreply, State};
+    NewState =
+        case rtcp:decode(Data) of
+            {ok, RTCP} ->
+                case rtp_utils:get_rtcp_report(RTCP) of
+                    undefined -> State;
+                    #sr{} = SR ->
+                        lager:info("RECEIVED SR sid:~p ssrc:~p, ntp:~p timestamp:~p packets:~p octets:~p",
+                            [State#state.sid, SR#sr.ssrc, SR#sr.ntp, SR#sr.timestamp, SR#sr.packets, SR#sr.octets]),
+                        RBlock = #rblock{
+                            ssrc = SR#sr.ssrc,
+                            fraction = State#state.fraction_lost_packets,
+                            lost = State#state.lost_packets,
+                            last_seq = State#state.last_sequence_number,
+                            jitter = trunc(QOS#qos.jitter),
+                            lsr = SR#sr.ntp bsr 32,
+                            dlsr = trunc((NTP - State#state.sr_ntp) / 65536)
+                        },
+                        {IP, Port} = State#state.destination_addr,
+                        RR = #rr{ssrc = State#state.ssrc, rblocks = [RBlock]},
+                        lager:info("SID:~p, RR: ~p",
+                            [State#state.sid, RR]),
+                        RRData = rtcp:encode(RR),
+                        send(State#state.rtcp, IP, Port + 1, RRData),
+                        State#state{fraction_lost_packets = 0, sr_ntp = SR#sr.ntp};
+                    #rr{} = RR ->
+                        lager:info("RECEIVED RR sid:~p ssrc:~p, rblocks:~p ijs:~p ",
+                            [State#state.sid, RR#rr.ssrc, RR#rr.rblocks, RR#rr.ijs]),
+
+                        lists:foreach(fun(Block) ->
+                            RTD = round_trip_delay(NTP, Block#rblock.lsr, Block#rblock.dlsr),
+                            lager:info("sid:~p ssrc:~p round_trip_delay:~p ",
+                                [State#state.sid, RR#rr.ssrc, RTD])
+                        end, RR#rr.rblocks),
+                        State#state{fraction_lost_packets = 0};
+                    _ ->
+                        lager:info("sid:~p, RTCP: ~p",
+                            [State#state.sid, RTCP])
+                end;
+            Error ->
+                lager:debug("RTCP decode error: ~p", [Error]),
+                State
+        end,
+    {noreply, NewState};
 
 handle_info(Request, State) ->
     lager:debug("Unknown request: ~p ~nState:~p ", [Request, State]),
@@ -158,8 +245,8 @@ handle_info(Request, State) ->
 
 terminate(Reason, State) ->
     lager:info("Terminating call process, reason ~p", [Reason]),
-    lager:info("Call stats caller:~p, sid:~p, total_packets:~p, loss_packets:~p",
-        [exmpp_jid:to_binary(State#state.origin_jid), State#state.sid, State#state.npackets + State#state.loss_packets, State#state.loss_packets]),
+    lager:info("Call stats caller:~p, sid:~p, total_packets:~p, lost_packets:~p",
+        [exmpp_jid:to_binary(State#state.origin_jid), State#state.sid, State#state.npackets + State#state.lost_packets, State#state.lost_packets]),
     ok.
 
 code_change(_OldVsn, State, _Extra) ->
@@ -209,22 +296,46 @@ session_initiate(Session, Packet, _State) ->
     lager:info("Socket local for listen opened ip:~p port:~p", [?LISTEN_IP, Port]),
     lager:info("Addres to send ip:~p port:~p", [DestinationIp, Port]),
 
-    send(RtpSock, DestinationIp, Port, <<>>),
-    send(RtcpSock, DestinationIp, Port + 1, <<>>),
+    SSRC = rtp_utils:generate_ssrc(),
 
-    #state{sid = Sid,
-    origin_jid = Sender,
-    destination_jid = Recipient,
-    rtp = RtpSock,
-    rtcp = RtcpSock,
-    destination_addr = {DestinationIp, Port},
-    loss_packets = 0,
-    npackets = 0,
-    qos = #qos{}
+    send(RtpSock, DestinationIp, Port, <<>>), %%TODO send empty rtp packet
+
+    RTCP = #rtcp{payloads = [
+        #rr{ssrc = SSRC,
+        rblocks = [#rblock{
+            ssrc = 0,
+            fraction = 0,
+            lost = 0,
+            last_seq = 0,
+            jitter = 0,
+            lsr = 0,
+            dlsr = 0
+        }]
+        },
+        #sdes{list = [
+            [{ssrc, SSRC},
+                {cname, exmpp_jid:bare_to_list(Sender)},
+                {eof, true}]
+        ]}
+    ]},
+    RTCPData = rtcp:encode(RTCP),
+
+    send(RtcpSock, DestinationIp, Port + 1, RTCPData),
+
+    erlang:send_after(2500, self(), send_sr), %% FIRST SR AT 2,5 seconds
+
+    #state{
+        sid = Sid,
+        ssrc = SSRC,
+        origin_jid = Sender,
+        destination_jid = Recipient,
+        rtp = RtpSock,
+        rtcp = RtcpSock,
+        destination_addr = {DestinationIp, Port},
+        qos = #qos{}
     }.
 
-
-session_terminate(Session, Packet, #state{rtp = RtpSock, rtcp = RtcpSock}) ->
+session_terminate(Session, Packet, #state{rtp = RtpSock, rtcp = RtcpSock} = State) ->
     lager:info("Closing rtp socket ~p", [RtpSock]),
     Crtp = gen_udp:close(RtpSock),
     lager:info("Closed ~p", [Crtp]),
@@ -233,8 +344,31 @@ session_terminate(Session, Packet, #state{rtp = RtpSock, rtcp = RtcpSock}) ->
     lager:info("Closed ~p", [Crtcp]),
     Result = exmpp_iq:result(Packet),
     exmpp_session:send_packet(Session, Result),
+    {IP, Port} = State#state.destination_addr,
+    Text = io_lib:format("Call stats~n"
+    "~nHost: ~p"
+    "~nPort: ~p"
+    "Total packets: ~p"
+    "~nLost packets: ~p"
+    "~nDropped packets: ~p"
+    "~nJitter: ~p"
+    "~nAvg. Round trip delay: ~p"
+    "~nPacket loss: ~p"
+    "~nMean Opinion Score: ~p", [
+        IP, Port,
+        State#state.npackets,
+        State#state.lost_packets,
+        State#state.dropped_packets,
+        State#state.qos#qos.jitter,
+        State#state.qos#qos.round_trip_delay,
+        State#state.qos#qos.packet_loss,
+        State#state.qos#qos.mos
+    ]),
+    TmpEcho = exmpp_message:chat(Text),
+    Echo = exmpp_stanza:set_jids(TmpEcho, State#state.destination_jid, State#state.origin_jid),
+    lager:info("Echo message ~n~p~n", [Echo]),
+    exmpp_session:send_packet(Session, Echo),
     ok.
-
 
 send(Sock, Addr, Port, Data) ->
     case gen_udp:send(Sock, Addr, Port, Data) of
@@ -246,3 +380,18 @@ send(Sock, Addr, Port, Data) ->
             exit({shutdown, Err})
     end.
 
+
+loss_packets(LostPackets, ReceivedPacktes) ->
+    Expected = ReceivedPacktes + LostPackets,
+    LostPackets / Expected.
+
+-spec jitter(Jitter :: float(),
+    RecOld :: non_neg_integer(), RecNew :: non_neg_integer(),
+    SentOld :: non_neg_integer(), SentNew :: non_neg_integer(), Frecuency :: float()) -> float().
+
+jitter(JitterOld, RecOld, RecNew, SentOld, SentNew, Frecuency) ->
+    D = abs((RecNew - RecOld) - (SentNew * Frecuency - SentOld * Frecuency)),
+    JitterOld + (1 / 16 * (D - JitterOld)).
+
+round_trip_delay(A, LSR, DLSR) ->
+    A - LSR - DLSR.

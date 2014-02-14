@@ -40,9 +40,6 @@
 -module(rtcp).
 -author('lemenkov@gmail.com').
 
-% FIXME - don't forget to remove from final version!
--compile(export_all).
-
 -export([encode/1]).
 -export([decode/1]).
 
