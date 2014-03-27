@@ -46,6 +46,8 @@
 
 -type qos() :: #qos{}.
 
+%% TODO save state in ets one for each ssrc
+
 -record(state, {
     sid :: binary(),
     ssrc :: non_neg_integer(),
@@ -55,6 +57,7 @@
     rtcp :: inet:posix(),
     destination_addr :: {inet:ip_address(), inet:port_number()},
     last_timestamp :: erlang:timestamp(),
+    ts_offset = 0 :: non_neg_integer(),
     last_rtp_packet_timestamp = 0 :: non_neg_integer(),
     last_sequence_number = 0 :: non_neg_integer(),
     lost_packets = 0 :: non_neg_integer(),
@@ -62,6 +65,7 @@
     dropped_packets = 0 :: non_neg_integer(),
     npackets = 0 :: non_neg_integer(),
     noctets = 0 :: non_neg_integer(),
+    destination_ssrc :: non_neg_integer(),
     key :: binary(),
     mask :: binary(),
     qos :: qos(),
@@ -96,13 +100,25 @@ handle_info({Session, Packet}, State) ->
 
 handle_info(send_sr, State) ->
     % Do the action
+    NTP = rtp_utils:ntp_timestamp(),
+    Rblocks = [
+        #rblock{
+            ssrc = State#state.destination_ssrc,
+            fraction = State#state.fraction_lost_packets,
+            lost = State#state.lost_packets,
+            last_seq = State#state.last_sequence_number,
+            jitter = trunc(State#state.qos#qos.jitter),
+            lsr = State#state.sr_ntp bsr 32,
+            dlsr = trunc((NTP - State#state.sr_ntp) / 65536)  %%FIXME negative values ?
+        }
+    ],    %%TODO fix
     SR = #sr{
         ssrc = State#state.ssrc,
-        ntp = rtp_utils:ntp_timestamp(),
-        timestamp = 0, %%TODO fix
+        ntp = NTP,
+        timestamp = trunc((NTP bsr 32) * (1 / ?FRECUENCY)) + State#state.ts_offset, %%  sec * (1/ ?FRECUENCY) = timestamp
         packets = State#state.npackets,
         octets = State#state.noctets,
-        rblocks = []}, %%TODO fix
+        rblocks = Rblocks},
     lager:info("SID:~p, SR: ~p",
         [State#state.sid, SR]),
     SRData = rtcp:encode(SR),
@@ -176,6 +192,7 @@ handle_info({udp, Sock, SrcIP, SrcPort, Data},
                         State#state{
                             last_timestamp = os:timestamp(),
                             last_rtp_packet_timestamp = RTP#rtp.timestamp,
+                            destination_ssrc = RTP#rtp.ssrc,
                             npackets = NPackets + 1,
                             last_sequence_number = RTP#rtp.sequence_number,
                             lost_packets = LostPackets,
@@ -210,7 +227,7 @@ handle_info({udp, Sock, SrcIP, SrcPort, Data},
                             last_seq = State#state.last_sequence_number,
                             jitter = trunc(QOS#qos.jitter),
                             lsr = SR#sr.ntp bsr 32,
-                            dlsr = trunc((NTP - State#state.sr_ntp) / 65536)
+                            dlsr = trunc((NTP - State#state.sr_ntp) / 65536)  %%FIXME negative values ?
                         },
                         {IP, Port} = State#state.destination_addr,
                         RR = #rr{ssrc = State#state.ssrc, rblocks = [RBlock]},
@@ -298,23 +315,24 @@ session_initiate(Session, Packet, _State) ->
 
     SSRC = rtp_utils:generate_ssrc(),
 
-    send(RtpSock, DestinationIp, Port, <<>>), %%TODO send empty rtp packet
+    send(RtpSock, DestinationIp, Port, <<0>>), %%Send data to notify relay
 
     RTCP = #rtcp{payloads = [
-        #rr{ssrc = SSRC,
-        rblocks = [#rblock{
-            ssrc = 0,
-            fraction = 0,
-            lost = 0,
-            last_seq = 0,
-            jitter = 0,
-            lsr = 0,
-            dlsr = 0
-        }]
+        #rr{
+            ssrc = SSRC,
+            rblocks = [#rblock{
+                ssrc = 0,
+                fraction = 0,
+                lost = 0,
+                last_seq = 0,
+                jitter = 0,
+                lsr = 0,
+                dlsr = 0
+            }]
         },
         #sdes{list = [
             [{ssrc, SSRC},
-                {cname, exmpp_jid:bare_to_list(Sender)},
+                {cname, exmpp_jid:bare_to_list(Recipient)},
                 {eof, true}]
         ]}
     ]},
@@ -327,15 +345,20 @@ session_initiate(Session, Packet, _State) ->
     #state{
         sid = Sid,
         ssrc = SSRC,
-        origin_jid = Sender,
-        destination_jid = Recipient,
+        origin_jid = Recipient,
+        destination_jid = Sender,
         rtp = RtpSock,
         rtcp = RtcpSock,
         destination_addr = {DestinationIp, Port},
+        ts_offset = random:uniform(681), %% calculate random
         qos = #qos{}
     }.
 
 session_terminate(Session, Packet, #state{rtp = RtpSock, rtcp = RtcpSock} = State) ->
+    {IP, Port} = State#state.destination_addr,
+    BYE = #bye{ssrc = [State#state.ssrc], message = "session terminate"},
+    BYEData = rtcp:encode(BYE),
+    send(RtcpSock, IP, Port, BYEData),
     lager:info("Closing rtp socket ~p", [RtpSock]),
     Crtp = gen_udp:close(RtpSock),
     lager:info("Closed ~p", [Crtp]),
@@ -344,30 +367,7 @@ session_terminate(Session, Packet, #state{rtp = RtpSock, rtcp = RtcpSock} = Stat
     lager:info("Closed ~p", [Crtcp]),
     Result = exmpp_iq:result(Packet),
     exmpp_session:send_packet(Session, Result),
-    {IP, Port} = State#state.destination_addr,
-    Text = io_lib:format("Call stats~n"
-    "~nHost: ~p"
-    "~nPort: ~p"
-    "Total packets: ~p"
-    "~nLost packets: ~p"
-    "~nDropped packets: ~p"
-    "~nJitter: ~p"
-    "~nAvg. Round trip delay: ~p"
-    "~nPacket loss: ~p"
-    "~nMean Opinion Score: ~p", [
-        IP, Port,
-        State#state.npackets,
-        State#state.lost_packets,
-        State#state.dropped_packets,
-        State#state.qos#qos.jitter,
-        State#state.qos#qos.round_trip_delay,
-        State#state.qos#qos.packet_loss,
-        State#state.qos#qos.mos
-    ]),
-    TmpEcho = exmpp_message:chat(Text),
-    Echo = exmpp_stanza:set_jids(TmpEcho, State#state.destination_jid, State#state.origin_jid),
-    lager:info("Echo message ~n~p~n", [Echo]),
-    exmpp_session:send_packet(Session, Echo),
+    send_stats_message(Session, State),
     ok.
 
 send(Sock, Addr, Port, Data) ->
@@ -380,6 +380,32 @@ send(Sock, Addr, Port, Data) ->
             exit({shutdown, Err})
     end.
 
+send_stats_message(Session, State) ->
+    {IP, Port} = State#state.destination_addr,
+    Text = io_lib:format("Call stats~n"
+    "~nHost: ~s"
+    "~nPort: ~p"
+    "~nTotal packets: ~p"
+    "~nLost packets: ~p"
+    "~nDropped packets: ~p"
+    "~nJitter: ~.3f"
+    "~nAvg. Round trip delay: ~.3f"
+    "~nPacket loss: ~.3f"
+    "~nMean Opinion Score: ~p", [
+        inet_parse:ntoa(IP), Port,
+        State#state.npackets,
+        State#state.lost_packets,
+        State#state.dropped_packets,
+        State#state.qos#qos.jitter,
+        State#state.qos#qos.round_trip_delay, %%TODO fix me
+        State#state.qos#qos.packet_loss,
+        State#state.qos#qos.mos
+    ]),
+    TmpEcho = exmpp_message:chat(Text),
+    Echo = exmpp_stanza:set_jids(TmpEcho, State#state.origin_jid, State#state.destination_jid),
+    lager:info("Echo message ~n~p~n", [Echo]),
+    exmpp_session:send_packet(Session, Echo),
+    ok.
 
 loss_packets(LostPackets, ReceivedPacktes) ->
     Expected = ReceivedPacktes + LostPackets,
